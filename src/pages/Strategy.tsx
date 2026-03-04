@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type StrategySuggestion = {
   id: string;
@@ -17,6 +17,10 @@ const LS_FANNAME = "pitwall:fanName";
 // Put your image in: /public/backgrounds/
 // Rename it to: strategy-bg.jpg (or change this constant)
 const BG_URL = "/backgrounds/strategy-bg.jpg";
+
+// Popup rules
+const POPUP_COOLDOWN_MS = 60_000; // 1 min cooldown to avoid spam
+const POLL_INTERVAL_MS = 12_000;
 
 function clamp01(n: number) {
   return Math.max(0, Math.min(1, n));
@@ -93,6 +97,17 @@ function normalizeBackendToSuggestion(res: any): StrategySuggestion | null {
   };
 }
 
+function shouldShowPopup(res: any): boolean {
+  if (!res) return false;
+
+  // Preferred signal from backend
+  if (typeof res.recommendPit === "boolean") return res.recommendPit;
+
+  // Fallback if backend only returns a string
+  const rec = String(res.recommendation ?? res.call ?? res.decision ?? "");
+  return rec.toUpperCase().includes("PIT");
+}
+
 export default function Strategy() {
   const apiBase = useMemo(() => {
     const env = (import.meta as any).env;
@@ -108,6 +123,10 @@ export default function Strategy() {
   const [statusText, setStatusText] = useState<string>("Live engine connected");
 
   const pollLock = useRef(false);
+
+  // Popup spam guards
+  const lastPopupAtRef = useRef<number>(0);
+  const lastPopupKeyRef = useRef<string>("");
 
   function persistFanName(next?: string) {
     const v = typeof next === "string" ? next : fanName;
@@ -176,6 +195,8 @@ export default function Strategy() {
             baseline_lap_duration: 90,
             sc_state: 0,
             vsc_state: 0,
+            compound: "MEDIUM",
+            tyreAgeLaps: 18,
           },
           out: {
             meeting_key: "9839",
@@ -188,7 +209,7 @@ export default function Strategy() {
         },
       };
 
-      const base = apiBase ? String(apiBase).replace(/\/$/, "") : "";
+      const base = String(apiBase || "http://localhost:3001").replace(/\/$/, "");
       const url = base + "/strategy/evaluate";
 
       const r = await fetch(url, {
@@ -210,8 +231,37 @@ export default function Strategy() {
         return;
       }
 
-      setLiveCard(suggestion);
-      setSecondsLeft(7);
+      // ✅ Always log it (history)
+      setAvailable((prev) => [suggestion, ...prev].slice(0, 30));
+
+      // ✅ Only open popup if it's a pit opportunity
+      const pitOpportunity = shouldShowPopup(data);
+
+      // Build a stable key to avoid duplicate popups for the same situation
+      const key =
+        String(data.recommendation ?? suggestion.title) +
+        "|" +
+        String(Math.round((Number(data.confidence) || suggestion.confidence) * 100)) +
+        "|" +
+        String(Math.round(Number(data.totalPitLoss) || 0));
+
+      const now = Date.now();
+      const inCooldown = now - lastPopupAtRef.current < POPUP_COOLDOWN_MS;
+      const sameAsLast = key === lastPopupKeyRef.current;
+
+      // Only open if:
+      // - pitOpportunity
+      // - no popup currently open
+      // - not in cooldown
+      // - not the exact same key as last popup
+      if (pitOpportunity && !liveCard && !inCooldown && !sameAsLast) {
+        lastPopupAtRef.current = now;
+        lastPopupKeyRef.current = key;
+
+        setLiveCard(suggestion);
+        setSecondsLeft(7);
+      }
+
       setStatusText("Live engine connected");
     } catch {
       setStatusText("Backend not reachable");
@@ -222,16 +272,15 @@ export default function Strategy() {
 
   useEffect(() => {
     fetchRecommendation();
-    const id = window.setInterval(fetchRecommendation, 12000);
+    const id = window.setInterval(fetchRecommendation, POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apiBase]);
+  }, []);
 
   useEffect(() => {
     if (!liveCard) return;
 
     if (secondsLeft <= 0) {
-      setAvailable((prev) => [liveCard, ...prev]);
       setLiveCard(null);
       return;
     }
@@ -243,10 +292,7 @@ export default function Strategy() {
   return (
     <div className="relative min-h-screen text-white">
       {/* Background controlled by file in /public/backgrounds */}
-      <div
-        className="absolute inset-0 bg-cover bg-center"
-        style={{ backgroundImage: "url('" + BG_URL + "')" }}
-      />
+      <div className="absolute inset-0 bg-cover bg-center" style={{ backgroundImage: "url('" + BG_URL + "')" }} />
       <div className="absolute inset-0 bg-black/75" />
 
       {/* Live pop-up */}
@@ -264,10 +310,7 @@ export default function Strategy() {
             </div>
 
             <div className="mt-5 h-2 bg-white/10 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-red-600"
-                style={{ width: Math.round(liveCard.confidence * 100) + "%" }}
-              />
+              <div className="h-full bg-red-600" style={{ width: Math.round(liveCard.confidence * 100) + "%" }} />
             </div>
 
             <div className="mt-4 text-sm text-white/70">
@@ -302,9 +345,8 @@ export default function Strategy() {
           <div>
             <div className="text-xs tracking-widest text-white/60">STRATEGY</div>
             <div className="text-3xl font-semibold mt-1">PitWall Strategy Hub</div>
-            <div className="text-sm text-white/70 mt-2">
-              Live strategy calls backed by confidence and clear reasoning.
-            </div>
+            <div className="text-sm text-white/70 mt-2">Live strategy calls backed by confidence and clear reasoning.</div>
+
             <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/40 px-3 py-1 text-xs text-white/70">
               <span className="h-2 w-2 rounded-full bg-green-400" />
               {statusText}
@@ -334,10 +376,7 @@ export default function Strategy() {
                     </div>
 
                     <div className="mt-3 h-1.5 bg-white/10 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-red-600"
-                        style={{ width: Math.round(s.confidence * 100) + "%" }}
-                      />
+                      <div className="h-full bg-red-600" style={{ width: Math.round(s.confidence * 100) + "%" }} />
                     </div>
                   </div>
                 ))

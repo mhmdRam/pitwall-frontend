@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type Driver = { id: string; name: string; number?: number };
 type Team = { id: string; name: string; accent: string; drivers: Driver[] };
