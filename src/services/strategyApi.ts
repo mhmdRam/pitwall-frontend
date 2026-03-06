@@ -53,3 +53,29 @@ export async function getStrategyScore(params?: { mode?: "fan" | "team"; count?:
 
   return res.data;
 }
+
+
+export type ReplayStrategyRequest = {
+  session: string;
+  driver: number;
+  lap: number;
+};
+
+export type ReplayStrategyResponse = {
+  recommendation: string;
+  confidence: number;
+  summary: string;
+  reasons: string[];
+  explanation?: string;
+  totalPitLoss: number;
+  recommendPit: boolean;
+};
+
+export async function evaluateReplayStrategy(input: ReplayStrategyRequest) {
+  const res = await api.post<ReplayStrategyResponse>(
+    "/strategy/replay",
+    input
+  );
+
+  return res.data;
+}
