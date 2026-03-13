@@ -1,3 +1,4 @@
+
 import React, { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
@@ -9,6 +10,7 @@ import {
   setRaceRunning,
   setReplayLap,
   setReplaySession,
+  getReplaySession,
 } from "../state/pitwallStore";
 
 type TeamKey =
@@ -28,6 +30,14 @@ type Team = {
   key: TeamKey;
   color: string;
   drivers: [Driver, Driver];
+};
+
+type ReplaySessionOption = {
+  name: string;
+  session: string;
+  year: string;
+  type: string;
+  accent: string;
 };
 
 function Dot({ className = "" }: { className?: string }) {
@@ -91,8 +101,10 @@ export default function Race() {
   const [sessionModeState, setSessionModeState] = useState(getSessionMode());
 
   const [teamModalOpen, setTeamModalOpen] = useState(false);
+  const [sessionModalOpen, setSessionModalOpen] = useState(false);
   const [selectedTeamState, setSelectedTeamState] = useState<Team | null>(null);
   const [selectedDriverState, setSelectedDriverState] = useState<Driver | null>(null);
+  const [selectedReplaySessionState, setSelectedReplaySessionState] = useState(getReplaySession());
 
   const teams: Team[] = useMemo(
     () => [
@@ -109,6 +121,52 @@ export default function Race() {
     ],
     []
   );
+
+  const sessionOptions: Record<"practice" | "quali" | "race", ReplaySessionOption[]> = useMemo(
+    () => ({
+      practice: [
+        {
+          name: "Monza FP1",
+          session: "9839",
+          year: "2024",
+          type: "Practice 1",
+          accent: "from-rose-500/25 to-red-500/5 border-rose-400/30",
+        },
+        {
+          name: "Monza FP2",
+          session: "9840",
+          year: "2024",
+          type: "Practice 2",
+          accent: "from-orange-500/25 to-amber-500/5 border-orange-400/30",
+        },
+      ],
+      quali: [
+        {
+          name: "Monza Qualifying",
+          session: "9845",
+          year: "2024",
+          type: "Qualifying",
+          accent: "from-fuchsia-500/25 to-purple-500/5 border-fuchsia-400/30",
+        },
+      ],
+      race: [
+        {
+          name: "Monza Race",
+          session: "9850",
+          year: "2024",
+          type: "Race",
+          accent: "from-emerald-500/25 to-green-500/5 border-emerald-400/30",
+        },
+      ],
+    }),
+    []
+  );
+
+  const selectedSessionLabel = useMemo(() => {
+    const items = sessionOptions[sessionModeState] || [];
+    const found = items.find((x) => x.session === selectedReplaySessionState);
+    return found ? `${found.name} ${found.year} - ${found.type}` : "No session selected";
+  }, [selectedReplaySessionState, sessionModeState, sessionOptions]);
 
   const headerPills = useMemo(
     () => [
@@ -133,13 +191,16 @@ export default function Race() {
   function openTeamPicker() {
     setTeamModalOpen(true);
   }
+
   function closeTeamPicker() {
     setTeamModalOpen(false);
   }
+
   function pickTeam(team: Team) {
     setSelectedTeamState(team);
     setSelectedDriverState(null);
   }
+
   function pickDriver(driver: Driver) {
     if (!selectedTeamState) return;
 
@@ -151,6 +212,7 @@ export default function Race() {
     const num = Number(String(driver.number).replace("#", ""));
     if (Number.isFinite(num)) storeSetSelectedDriver(num);
   }
+
   function clearTeam() {
     setSelectedTeamState(null);
     setSelectedDriverState(null);
@@ -159,6 +221,13 @@ export default function Race() {
   function chooseSession(mode: "practice" | "quali" | "race") {
     setSessionMode(mode);
     setSessionModeState(mode);
+    setSessionModalOpen(true);
+  }
+
+  function pickReplaySession(session: string) {
+    setReplaySession(session);
+    setSelectedReplaySessionState(session);
+    setSessionModalOpen(false);
   }
 
   function startAndOpenStrategy() {
@@ -170,7 +239,12 @@ export default function Race() {
       return;
     }
 
-    setReplaySession("9839");
+    if (!selectedReplaySessionState) {
+      setSessionModalOpen(true);
+      return;
+    }
+
+    setReplaySession(selectedReplaySessionState);
     setReplayLap(1);
     setRaceRunning(true);
 
@@ -218,7 +292,7 @@ export default function Race() {
             </div>
           </div>
 
-          <div className="lg:col-span-4 space-y-4">
+          <div className="space-y-4 lg:col-span-4">
             <div className="rounded-2xl border border-white/10 bg-black/40 p-4 backdrop-blur">
               <div className="text-sm font-semibold">SESSION</div>
 
@@ -227,7 +301,7 @@ export default function Race() {
                   onClick={() => chooseSession("practice")}
                   className={`flex-1 rounded-full border border-white/10 px-3 py-2 text-sm hover:bg-black/40 ${
                     sessionModeState === "practice"
-                      ? "bg-pitRed/10 text-white border-pitRed/40"
+                      ? "border-pitRed/40 bg-pitRed/10 text-white"
                       : "bg-black/30 text-white/70"
                   }`}
                 >
@@ -237,7 +311,7 @@ export default function Race() {
                   onClick={() => chooseSession("quali")}
                   className={`flex-1 rounded-full border border-white/10 px-3 py-2 text-sm hover:bg-black/40 ${
                     sessionModeState === "quali"
-                      ? "bg-pitRed/10 text-white border-pitRed/40"
+                      ? "border-pitRed/40 bg-pitRed/10 text-white"
                       : "bg-black/30 text-white/70"
                   }`}
                 >
@@ -247,7 +321,7 @@ export default function Race() {
                   onClick={() => chooseSession("race")}
                   className={`flex-1 rounded-full border border-white/10 px-3 py-2 text-sm hover:bg-black/40 ${
                     sessionModeState === "race"
-                      ? "bg-pitRed/10 text-white border-pitRed/40"
+                      ? "border-pitRed/40 bg-pitRed/10 text-white"
                       : "bg-black/30 text-white/70"
                   }`}
                 >
@@ -256,7 +330,10 @@ export default function Race() {
               </div>
 
               <div className="mt-3 text-xs text-white/45">
-                Selected: <span className="text-white/70">{sessionModeState}</span>
+                Selected mode: <span className="text-white/70">{sessionModeState}</span>
+              </div>
+              <div className="mt-1 text-xs text-white/45">
+                Selected session: <span className="text-white/70">{selectedSessionLabel}</span>
               </div>
             </div>
 
@@ -277,7 +354,7 @@ export default function Race() {
                       selectedDriverState ? (
                         `${selectedDriverState.name} ${selectedDriverState.number}`
                       ) : (
-                        "Team selected — pick a driver"
+                        "Team selected - pick a driver"
                       )
                     ) : (
                       "Tap to pick a team, then choose your driver."
@@ -325,7 +402,7 @@ export default function Race() {
                 className="flex items-center justify-between rounded-xl border border-white/10 bg-black/40 p-4 text-left hover:bg-black/55"
               >
                 <div className="flex items-center gap-3">
-                  <div className={`h-10 w-10 rounded-xl ${t.color}`} />;
+                  <div className={`h-10 w-10 rounded-xl ${t.color}`} />
                   <div>
                     <div className="font-semibold">{t.key}</div>
                     <div className="text-xs text-white/50">Tap to select</div>
@@ -353,6 +430,40 @@ export default function Race() {
             ))}
           </div>
         )}
+      </ModalShell>
+
+      <ModalShell
+        open={sessionModalOpen}
+        onClose={() => setSessionModalOpen(false)}
+        title="Choose session"
+        subtitle="Select a replay session for the chosen mode."
+      >
+        <div className="grid grid-cols-1 gap-3">
+          {sessionOptions[sessionModeState].map((item) => (
+            <button
+              key={item.session}
+              onClick={() => pickReplaySession(item.session)}
+              className={`rounded-xl border bg-gradient-to-r ${item.accent} p-4 text-left transition hover:brightness-110`}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-[11px] font-semibold tracking-[0.28em] text-white/45">
+                    {item.type.toUpperCase()}
+                  </div>
+                  <div className="mt-1 text-lg font-semibold text-white">
+                    {item.name}
+                  </div>
+                  <div className="mt-1 text-sm text-white/65">
+                    {item.year} season
+                  </div>
+                </div>
+                <div className="rounded-full border border-white/10 bg-black/30 px-3 py-1 text-[11px] text-white/65">
+                  #{item.session}
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
       </ModalShell>
     </div>
   );

@@ -1,3 +1,4 @@
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getProfileName as getStoredProfileName,
@@ -22,8 +23,9 @@ type DriverInfo = {
 
 const REPLAY_START_LAP = 1;
 const REPLAY_MAX_LAP = 53;
-const POLL_MS = 2500;
+const POLL_MS = 6000;
 const ALERT_MS = 5000;
+const ALERT_COOLDOWN_MS = 15000;
 
 const DRIVER_LOOKUP: Record<string, DriverInfo> = {
   "1": { team: "Red Bull", name: "Max Verstappen", number: "#1" },
@@ -65,7 +67,7 @@ function normalizeBackendToSuggestion(data: any): SuggestionCard | null {
 
 export default function Strategy() {
   const apiBase = import.meta.env.VITE_API_BASE || "http://localhost:3001";
-  const bgUrl = import.meta.env.VITE_STRATEGY_BG || "/strategy-bg.jpg";
+  const bgUrl = "/strategy-bg.jpg";
 
   const profileName = useMemo(() => getStoredProfileName() || "Fan", []);
 
@@ -97,6 +99,8 @@ export default function Strategy() {
   const pollLock = useRef(false);
   const replayLapRef = useRef<number>(REPLAY_START_LAP);
   const alertTimerRef = useRef<number | null>(null);
+  const lastAlertAtRef = useRef<number>(0);
+  const lastAlertKeyRef = useRef<string>("");
 
   useEffect(() => {
     return () => {
@@ -115,6 +119,37 @@ export default function Strategy() {
 
     return () => window.clearInterval(id);
   }, [isRunning]);
+
+  function makeSuggestionKey(lap: number, suggestion: SuggestionCard) {
+    const pitLossPart =
+      typeof suggestion.totalPitLoss === "number" && Number.isFinite(suggestion.totalPitLoss)
+        ? suggestion.totalPitLoss.toFixed(1)
+        : "na";
+
+    return [
+      String(lap),
+      suggestion.title,
+      suggestion.subtitle,
+      pitLossPart,
+    ].join("|");
+  }
+
+  function shouldShowAlert(lap: number, suggestion: SuggestionCard) {
+    const now = Date.now();
+    const key = makeSuggestionKey(lap, suggestion);
+
+    if (key === lastAlertKeyRef.current) {
+      return false;
+    }
+
+    if (now - lastAlertAtRef.current < ALERT_COOLDOWN_MS) {
+      return false;
+    }
+
+    lastAlertKeyRef.current = key;
+    lastAlertAtRef.current = now;
+    return true;
+  }
 
   function showAlert(suggestion: SuggestionCard) {
     setActiveAlert(suggestion);
@@ -151,12 +186,14 @@ export default function Strategy() {
     if (pollLock.current) return;
     pollLock.current = true;
 
+    const requestLap = replayLapRef.current;
+
     try {
       setStatusText(
         "Fetching replay recommendation (session " +
           replaySession +
           ", lap " +
-          String(replayLapRef.current) +
+          String(requestLap) +
           ", driver " +
           String(selectedDriverNumber) +
           ")..."
@@ -171,7 +208,7 @@ export default function Strategy() {
         body: JSON.stringify({
           session: replaySession,
           driver: selectedDriverNumber,
-          lap: replayLapRef.current,
+          lap: requestLap,
         }),
       });
 
@@ -183,8 +220,8 @@ export default function Strategy() {
       const data = await r.json();
       const suggestion = normalizeBackendToSuggestion(data);
 
-      if (replayLapRef.current < REPLAY_MAX_LAP) {
-        replayLapRef.current += 1;
+      if (requestLap < REPLAY_MAX_LAP) {
+        replayLapRef.current = requestLap + 1;
       } else {
         setStatusText("Replay finished (lap " + String(REPLAY_MAX_LAP) + ")");
         setIsRunning(false);
@@ -192,7 +229,14 @@ export default function Strategy() {
 
       if (!suggestion) return;
 
-      setAvailable((prev) => [suggestion, ...prev].slice(0, 30));
+      const showThisAlert = shouldShowAlert(requestLap, suggestion);
+
+      if (!showThisAlert) {
+        setStatusText("PIT signal detected but suppressed to reduce spam");
+        return;
+      }
+
+      setAvailable((prev) => [suggestion, ...prev].slice(0, 20));
       setStatusText("PIT opportunity detected for " + selectedDriverLabel);
       showAlert(suggestion);
     } catch (_e) {
@@ -203,174 +247,180 @@ export default function Strategy() {
   }
 
   return (
-    <div
-      className="min-h-screen w-full text-white"
-      style={{
-        backgroundImage: `linear-gradient(rgba(0,0,0,.72), rgba(0,0,0,.85)), url(${bgUrl})`,
-        backgroundSize: "cover",
-        backgroundPosition: "center",
-        backgroundRepeat: "no-repeat",
-      }}
-    >
-      {activeAlert ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
-          <div className="w-full max-w-xl rounded-3xl border border-yellow-300/60 bg-yellow-500/15 p-6 shadow-[0_0_40px_rgba(255,220,80,0.35)] backdrop-blur-xl">
-            <div className="text-center">
-              <div className="text-[11px] font-semibold tracking-[0.35em] text-yellow-200">
-                STRATEGY ALERT
-              </div>
-              <div className="mt-3 text-3xl font-extrabold text-yellow-100">
-                {activeAlert.title}
-              </div>
-              <div className="mt-2 text-base text-white/85">{selectedDriverLabel}</div>
-              <div className="mt-3 text-sm text-white/80">{activeAlert.subtitle}</div>
-            </div>
+    <>
+      <div
+        className="fixed inset-0 z-0"
+        style={{
+          backgroundImage: `linear-gradient(rgba(0,0,0,.72), rgba(0,0,0,.85)), url(${bgUrl})`,
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          backgroundRepeat: "no-repeat",
+        }}
+      />
 
-            <div className="mt-5">
-              <div className="mb-2 flex items-center justify-between text-xs text-yellow-100/80">
-                <span>Confidence</span>
-                <span>{Math.round(activeAlert.confidence * 100)}%</span>
+      <div className="relative z-10 min-h-screen w-full text-white">
+        {activeAlert ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
+            <div className="w-full max-w-xl rounded-3xl border border-yellow-300/60 bg-yellow-500/15 p-6 shadow-[0_0_40px_rgba(255,220,80,0.35)] backdrop-blur-xl">
+              <div className="text-center">
+                <div className="text-[11px] font-semibold tracking-[0.35em] text-yellow-200">
+                  STRATEGY ALERT
+                </div>
+                <div className="mt-3 text-3xl font-extrabold text-yellow-100">
+                  {activeAlert.title}
+                </div>
+                <div className="mt-2 text-base text-white/85">{selectedDriverLabel}</div>
+                <div className="mt-3 text-sm text-white/80">{activeAlert.subtitle}</div>
               </div>
-              <div className="h-3 rounded-full bg-black/25">
-                <div
-                  className="h-3 rounded-full bg-yellow-300 shadow-[0_0_18px_rgba(255,230,120,0.8)]"
-                  style={{ width: `${Math.max(8, Math.round(activeAlert.confidence * 100))}%` }}
-                />
-              </div>
-            </div>
 
-            {typeof activeAlert.totalPitLoss === "number" && Number.isFinite(activeAlert.totalPitLoss) ? (
-              <div className="mt-4 text-center text-sm text-yellow-50/90">
-                Estimated pit loss: {activeAlert.totalPitLoss.toFixed(2)}s
-              </div>
-            ) : null}
-
-            {activeAlert.reasons?.length ? (
-              <ul className="mt-4 list-disc space-y-1 pl-5 text-sm text-white/80">
-                {activeAlert.reasons.slice(0, 5).map((reason, idx) => (
-                  <li key={idx}>{reason}</li>
-                ))}
-              </ul>
-            ) : null}
-
-            <div className="mt-6 flex items-center justify-center gap-3">
-              <button
-                onClick={confirmPitNow}
-                className="rounded-xl bg-yellow-300 px-5 py-3 text-sm font-bold text-black shadow-[0_0_18px_rgba(255,230,120,0.65)] hover:bg-yellow-200"
-              >
-                PIT NOW
-              </button>
-              <button
-                onClick={dismissAlert}
-                className="rounded-xl border border-white/20 bg-black/25 px-5 py-3 text-sm font-semibold text-white hover:bg-black/35"
-              >
-                DISMISS
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      <div className="mx-auto max-w-6xl px-4 pt-10">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-xs tracking-widest text-white/60">STRATEGY</div>
-            <h1 className="mt-2 text-3xl font-semibold">PitWall Strategy Hub</h1>
-            <div className="mt-2 text-sm text-white/60">{statusText}</div>
-            <div className="mt-4 flex flex-wrap gap-2">
-              <div className="rounded-full border border-white/10 bg-black/40 px-3 py-1 text-xs text-white/80">
-                Team: {selectedTeamLabel}
-              </div>
-              <div className="rounded-full border border-white/10 bg-black/40 px-3 py-1 text-xs text-white/80">
-                Driver: {selectedDriverLabel}
-              </div>
-              <div className="rounded-full border border-white/10 bg-black/40 px-3 py-1 text-xs text-white/80">
-                Replay Session: {replaySession}
-              </div>
-            </div>
-          </div>
-
-          <div className="flex gap-2">
-            {!isRunning ? (
-              <button
-                className="rounded-xl bg-red-600 px-4 py-2 font-semibold hover:bg-red-500"
-                onClick={() => {
-                  replayLapRef.current = REPLAY_START_LAP;
-                  setAvailable([]);
-                  setActiveAlert(null);
-                  setIsRunning(true);
-                  setStatusText("Replay started for " + selectedDriverLabel);
-                }}
-              >
-                Start
-              </button>
-            ) : (
-              <button
-                className="rounded-xl bg-white/10 px-4 py-2 font-semibold hover:bg-white/15"
-                onClick={() => {
-                  setIsRunning(false);
-                  setStatusText("Stopped");
-                }}
-              >
-                Stop
-              </button>
-            )}
-          </div>
-        </div>
-
-        <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-3">
-          <div className="lg:col-span-2 rounded-2xl border border-white/10 bg-black/40 p-4 backdrop-blur">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Available Strategies</h2>
-              <div className="text-xs text-white/50">Logged recommendations</div>
-            </div>
-
-            <div className="mt-4 space-y-3">
-              {available.length === 0 ? (
-                <div className="text-sm text-white/60">Waiting for the first PIT recommendation...</div>
-              ) : (
-                available.map((s, idx) => (
+              <div className="mt-5">
+                <div className="mb-2 flex items-center justify-between text-xs text-yellow-100/80">
+                  <span>Confidence</span>
+                  <span>{Math.round(activeAlert.confidence * 100)}%</span>
+                </div>
+                <div className="h-3 rounded-full bg-black/25">
                   <div
-                    key={idx}
-                    className="rounded-xl border border-white/10 bg-white/5 p-4"
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="font-semibold">{s.title}</div>
-                      <div className="text-white/70">{Math.round(s.confidence * 100)}%</div>
-                    </div>
-                    <div className="mt-1 text-sm text-white/70">{s.subtitle}</div>
-                    {typeof s.totalPitLoss === "number" && Number.isFinite(s.totalPitLoss) ? (
-                      <div className="mt-2 text-xs text-white/60">
-                        Estimated pit loss: {s.totalPitLoss.toFixed(2)}s
-                      </div>
-                    ) : null}
-                    {s.reasons?.length ? (
-                      <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-white/60">
-                        {s.reasons.slice(0, 5).map((r, i) => (
-                          <li key={i}>{r}</li>
-                        ))}
-                      </ul>
-                    ) : null}
-                  </div>
-                ))
+                    className="h-3 rounded-full bg-yellow-300 shadow-[0_0_18px_rgba(255,230,120,0.8)]"
+                    style={{ width: `${Math.max(8, Math.round(activeAlert.confidence * 100))}%` }}
+                  />
+                </div>
+              </div>
+
+              {typeof activeAlert.totalPitLoss === "number" && Number.isFinite(activeAlert.totalPitLoss) ? (
+                <div className="mt-4 text-center text-sm text-yellow-50/90">
+                  Estimated pit loss: {activeAlert.totalPitLoss.toFixed(2)}s
+                </div>
+              ) : null}
+
+              {activeAlert.reasons?.length ? (
+                <ul className="mt-4 list-disc space-y-1 pl-5 text-sm text-white/80">
+                  {activeAlert.reasons.slice(0, 5).map((reason, idx) => (
+                    <li key={idx}>{reason}</li>
+                  ))}
+                </ul>
+              ) : null}
+
+              <div className="mt-6 flex items-center justify-center gap-3">
+                <button
+                  onClick={confirmPitNow}
+                  className="rounded-xl bg-yellow-300 px-5 py-3 text-sm font-bold text-black shadow-[0_0_18px_rgba(255,230,120,0.65)] hover:bg-yellow-200"
+                >
+                  PIT NOW
+                </button>
+                <button
+                  onClick={dismissAlert}
+                  className="rounded-xl border border-white/20 bg-black/25 px-5 py-3 text-sm font-semibold text-white hover:bg-black/35"
+                >
+                  DISMISS
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        <div className="mx-auto max-w-6xl px-4 pt-10">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-xs tracking-widest text-white/60">STRATEGY</div>
+              <h1 className="mt-2 text-3xl font-semibold">PitWall Strategy Hub</h1>
+              <div className="mt-2 text-sm text-white/60">{statusText}</div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <div className="rounded-full border border-white/10 bg-black/40 px-3 py-1 text-xs text-white/80">
+                  Team: {selectedTeamLabel}
+                </div>
+                <div className="rounded-full border border-white/10 bg-black/40 px-3 py-1 text-xs text-white/80">
+                  Driver: {selectedDriverLabel}
+                </div>
+                <div className="rounded-full border border-white/10 bg-black/40 px-3 py-1 text-xs text-white/80">
+                  Replay Session: {replaySession}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              {!isRunning ? (
+                <button
+                  className="rounded-xl bg-red-600 px-4 py-2 font-semibold hover:bg-red-500"
+                  onClick={() => {
+                    replayLapRef.current = REPLAY_START_LAP;
+                    lastAlertAtRef.current = 0;
+                    lastAlertKeyRef.current = "";
+                    setAvailable([]);
+                    setActiveAlert(null);
+                    setIsRunning(true);
+                    setStatusText("Replay started for " + selectedDriverLabel);
+                  }}
+                >
+                  Start
+                </button>
+              ) : (
+                <button
+                  className="rounded-xl bg-white/10 px-4 py-2 font-semibold hover:bg-white/15"
+                  onClick={() => {
+                    setIsRunning(false);
+                    setStatusText("Stopped");
+                  }}
+                >
+                  Stop
+                </button>
               )}
             </div>
           </div>
 
-          <div className="rounded-2xl border border-white/10 bg-black/40 p-4 backdrop-blur">
-            <h2 className="text-lg font-semibold">Fan Leaderboard</h2>
-            <div className="mt-2 text-sm text-white/60">Points reward fast confirmations.</div>
+          <div className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-3">
+            <div className="lg:col-span-2 rounded-2xl border border-white/10 bg-black/40 p-4 backdrop-blur">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Available Strategies</h2>
+                <div className="text-xs text-white/50">Logged recommendations</div>
+              </div>
 
-            <div className="mt-4 rounded-xl border border-white/10 bg-black/30 p-4">
-              <div className="text-xs text-white/50">You are</div>
-              <div className="mt-1 text-lg font-semibold">{profileName}</div>
-              <div className="mt-3 text-xs text-white/50">
-                (MVP scoring: Confirming a live call awards +15 points.)
+              <div className="mt-4 space-y-3">
+                {available.length === 0 ? (
+                  <div className="text-sm text-white/60">Waiting for the first PIT recommendation...</div>
+                ) : (
+                  available.map((s, idx) => (
+                    <div
+                      key={idx}
+                      className="rounded-xl border border-white/10 bg-white/5 p-4"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="font-semibold">{s.title}</div>
+                        <div className="text-white/70">{Math.round(s.confidence * 100)}%</div>
+                      </div>
+                      <div className="mt-1 text-sm text-white/70">{s.subtitle}</div>
+                      {typeof s.totalPitLoss === "number" && Number.isFinite(s.totalPitLoss) ? (
+                        <div className="mt-2 text-xs text-white/60">
+                          Estimated pit loss: {s.totalPitLoss.toFixed(2)}s
+                        </div>
+                      ) : null}
+                      {s.reasons?.length ? (
+                        <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-white/60">
+                          {s.reasons.slice(0, 5).map((r, i) => (
+                            <li key={i}>{r}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-black/40 p-4 backdrop-blur">
+              <h2 className="text-lg font-semibold">Fan Leaderboard</h2>
+              <div className="mt-2 text-sm text-white/60">Points reward fast confirmations.</div>
+
+              <div className="mt-4 rounded-xl border border-white/10 bg-black/30 p-4">
+                <div className="text-xs text-white/50">You are</div>
+                <div className="mt-1 text-lg font-semibold">{profileName}</div>
+                <div className="mt-3 text-xs text-white/50">
+                  (MVP scoring: Confirming a live call awards +15 points.)
+                </div>
               </div>
             </div>
           </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }
